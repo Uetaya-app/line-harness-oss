@@ -62,26 +62,7 @@ liffRoutes.get('/auth/line', async (c) => {
   // It must NOT appear in LIFF URLs or QR codes that escape to external domains.
   const externalRef = ref.startsWith('xh:') ? '' : ref;
 
-  // Build LIFF URL with ref + ad params (for mobile → LINE app)
-  // Extract LIFF ID from URL and pass as query param so the app can init correctly
-  const liffIdMatch = liffUrl.match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/);
-  const liffParams = new URLSearchParams();
-  if (liffIdMatch) liffParams.set('liffId', liffIdMatch[1]);
-  if (externalRef) liffParams.set('ref', externalRef);
-  if (redirect) liffParams.set('redirect', redirect);
-  if (gclid) liffParams.set('gclid', gclid);
-  if (fbclid) liffParams.set('fbclid', fbclid);
-  if (twclid) liffParams.set('twclid', twclid);
-  if (ttclid) liffParams.set('ttclid', ttclid);
-  if (utmSource) liffParams.set('utm_source', utmSource);
-  const liffTarget = liffParams.toString()
-    ? `${liffUrl}?${liffParams.toString()}`
-    : liffUrl;
-
-  // Build OAuth URL (for desktop fallback)
-  // Pack all tracking params into state so they survive the OAuth redirect.
-  // The full ref (including xh: tokens) is stored in state — it is opaque to access.line.me
-  // and only decoded by this worker's /auth/callback handler.
+  // OAuth URL first — works when LIFF_URL is unset (Wiki: LIFF_URL is optional)
   const state = JSON.stringify({ ref, redirect, gclid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, account: accountParam, uid: uidParam });
   const encodedState = btoa(state);
   const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
@@ -92,22 +73,36 @@ liffRoutes.get('/auth/line', async (c) => {
   loginUrl.searchParams.set('bot_prompt', 'aggressive');
   loginUrl.searchParams.set('state', encodedState);
 
-  // Build LIFF URL with params (opens LINE app directly on mobile + QR on PC)
-  // externalRef used — xh: tokens must not appear in QR codes or LIFF URLs
+  // Build LIFF URL with ref + ad params (for mobile → LINE app)
+  const liffIdMatch = liffUrl?.match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/);
+  const liffParams = new URLSearchParams();
+  if (liffIdMatch) liffParams.set('liffId', liffIdMatch[1]);
+  if (externalRef) liffParams.set('ref', externalRef);
+  if (redirect) liffParams.set('redirect', redirect);
+  if (gclid) liffParams.set('gclid', gclid);
+  if (fbclid) liffParams.set('fbclid', fbclid);
+  if (twclid) liffParams.set('twclid', twclid);
+  if (ttclid) liffParams.set('ttclid', ttclid);
+  if (utmSource) liffParams.set('utm_source', utmSource);
+
+  // QR / mobile: LIFF when configured; otherwise OAuth URL (same as desktop deep-link)
   const qrParams = new URLSearchParams();
   if (externalRef) qrParams.set('ref', externalRef);
   if (uidParam) qrParams.set('uid', uidParam);
   if (accountParam) qrParams.set('account', accountParam);
-  const qrUrl = qrParams.toString() ? `${liffUrl}?${qrParams.toString()}` : liffUrl;
+  const qrUrl = liffUrl
+    ? qrParams.toString()
+      ? `${liffUrl}?${qrParams.toString()}`
+      : liffUrl
+    : loginUrl.toString();
 
-  // Mobile: redirect to LIFF URL (opens LINE app directly)
-  // Exception: cross-account links (account param) use OAuth directly
-  // because Account A's LIFF can't open from Account B's LINE chat
   const ua = (c.req.header('user-agent') || '').toLowerCase();
   const isMobile = /iphone|ipad|android|mobile/.test(ua);
   if (isMobile) {
     if (accountParam) {
-      // Cross-account: use OAuth (LIFF won't work across accounts)
+      return c.redirect(loginUrl.toString());
+    }
+    if (!liffUrl) {
       return c.redirect(loginUrl.toString());
     }
     return c.redirect(qrUrl);
